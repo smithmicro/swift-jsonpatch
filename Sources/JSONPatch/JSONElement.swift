@@ -507,6 +507,21 @@ extension JSONElement {
 
 }
 
+extension JSONElement {
+    
+    func get(fieldName: String) -> JSONElement? {
+        guard self.isContainer, let dict = self.rawValue as? NSDictionary, let value = dict.value(forKey: fieldName) else { return nil }
+        
+        return try? JSONElement(any: value)
+    }
+    
+    func get(index: Int) -> JSONElement? {
+        guard self.isContainer, let dict = self.rawValue as? NSDictionary else { return nil }
+        
+        return try? JSONElement(any: dict.allValues[index])
+    }
+}
+
 extension JSONElement: Equatable {
 
     /// Tests if two JSON Elements are structurally.

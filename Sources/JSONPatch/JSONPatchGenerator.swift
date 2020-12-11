@@ -28,8 +28,10 @@ struct JSONPatchGenerator {
         case replace(path: JSONPointer, old: JSONElement, value: JSONElement)
         case copy(from: JSONPointer, path: JSONPointer, value: JSONElement)
         case move(from: JSONPointer, old: JSONElement, path: JSONPointer, value: JSONElement)
+        case test(path: JSONPointer, value: JSONElement)
     }
-
+    
+    private var identifiers = ["id"]
     private var unchanged: [JSONPointer: JSONElement] = [:]
     private var operations: [Operation] = []
     private var patchOperations: [JSONPatch.Operation] {
@@ -164,30 +166,100 @@ struct JSONPatchGenerator {
     }
 
     private mutating func generateArrayDiffs(pointer: JSONPointer,
-                                             source: NSArray,
-                                             target: NSArray) throws {
-        if source.count > target.count {
-            // target is smaller than source, remove end elements.
-            for index in (target.count..<source.count).reversed() {
-                remove(path: pointer.appended(withIndex: index),
-                       value: try JSONElement(any: source[index]))
+                                             source s: NSArray,
+                                             target t: NSArray) throws {
+        let source = s.toJSONElementArray()
+        let target = t.toJSONElementArray()
+        let lcs = source.longestCommonSubsequence(target)
+        
+        var srcIdx = 0;
+        var targetIdx = 0;
+        var lcsIdx = 0;
+        let srcSize = source.count
+        let targetSize = target.count
+        let lcsSize = lcs.count
+        
+        var pos = 0;
+        while lcsIdx < lcsSize {
+            let lcsNode = lcs[lcsIdx]
+            let srcNode = source[srcIdx]
+            let targetNode = target[targetIdx]
+            
+            if lcsNode == srcNode && lcsNode == targetNode {
+                srcIdx += 1;
+                targetIdx += 1;
+                lcsIdx += 1;
+                pos += 1;
+            } else {
+                if lcsNode == srcNode {
+                    let currPath = pointer.appended(withIndex: pos)
+                    operations.append(.add(path: currPath, value: targetNode))
+                    pos += 1;
+                    targetIdx += 1
+                } else if lcsNode == targetNode {
+                    let currPath = pointer.appended(withIndex: pos)
+                    operations.append(.test(path: currPath, value: srcNode))
+                    addArrayItemTest(path: currPath, node: srcNode)
+                    srcIdx += 1
+                } else {
+                    let currPath = pointer.appended(withIndex: pos)
+                    addArrayItemTest(path: currPath, node: srcNode)
+                    try generateDiffs(pointer: currPath, source: srcNode, target: targetNode)
+                    srcIdx += 1
+                    targetIdx += 1
+                    pos += 1
+                }
             }
         }
-
-        let count = min(source.count, target.count)
-        for index in 0..<count {
-            try generateDiffs(pointer: pointer.appended(withIndex: index),
-                              source: try JSONElement(any: source[index]),
-                              target: try JSONElement(any: target[index]))
+        
+        while srcIdx < srcSize && targetIdx < targetSize {
+            let srcNode = source[srcIdx]
+            let targetNode = target[targetIdx]
+            let currPath = pointer.appended(withIndex: pos)
+            addArrayItemTest(path: currPath, node: srcNode)
+            try generateDiffs(pointer: currPath, source: srcNode, target: targetNode)
+            srcIdx += 1;
+            targetIdx += 1;
+            pos += 1;
         }
-
-        if source.count < target.count {
-            let appendPointer = pointer.appended(withComponent: "-")
-            for index in source.count..<target.count {
-                add(path: appendPointer,
-                    value: try JSONElement(any: target[index]))
+        
+        pos = addRemaining(pointer, target, &pos, &targetIdx, targetSize)
+        removeRemaining(pointer, pos, &srcIdx, srcSize, source[pos])
+    }
+    
+    private mutating func addArrayItemTest(path: JSONPointer, node: JSONElement) {
+        if node.isContainer {
+            if let field = getIdentifierField(node), let value = node.get(fieldName: field) {
+                operations.append(.test(path: path.appended(withComponent: field), value: value))
+            }
+        } else {
+            operations.append(.test(path: path, value: node))
+        }
+    }
+    
+    private func getIdentifierField(_ node: JSONElement) -> String? {
+        return identifiers.first(where: { node.get(fieldName: $0) != nil })
+    }
+    
+    private mutating func removeRemaining(_ path: JSONPointer, _ pos: Int, _ srcIdx: inout Int, _ srcSize: Int, _ source: JSONElement) {
+        while srcIdx < srcSize {
+            if let value = source.get(index: srcIdx) {
+                let currPath = path.appended(withIndex: pos)
+                operations.append(.test(path: currPath, value: value))
+                addArrayItemTest(path: currPath, node: value)
             }
         }
+    }
+    
+    private mutating func addRemaining(_ path: JSONPointer, _ target: [JSONElement], _ pos: inout Int, _ targetIdx: inout Int, _ targetSize: Int) -> Int {
+        while targetIdx < targetSize {
+            let jsonNode = target[targetIdx]
+            let currPath = path.appended(withIndex: pos)
+            try? operations.append(.add(path: currPath, value: jsonNode.copy()))
+            pos += 1
+            targetIdx += 1
+        }
+        return 0
     }
 
     private mutating func replace(path: JSONPointer, old: JSONElement, value: JSONElement) {
@@ -199,14 +271,6 @@ struct JSONPatchGenerator {
     }
 
     private mutating func add(path: JSONPointer, value: JSONElement) {
-        if let removalIndex = findPreviouslyRemoved(value: value) {
-            guard case let .remove(removedPath, _) = operations[removalIndex] else {
-                return
-            }
-            operations.remove(at: removalIndex)
-            operations.append(.move(from: removedPath, old: value, path: path, value: value))
-            return
-        }
         if let oldPath = findUnchangedValue(value: value) {
             operations.append(.copy(from: oldPath, path: path, value: value))
         } else {
@@ -244,6 +308,8 @@ extension JSONPatch.Operation {
             self = .replace(path: path, value: value)
         case let .move(from, _, path, _):
             self = .move(from: from, path: path)
+        case let .test(path: path, value: value):
+            self = .test(path: path, value: value)
         }
     }
 }
