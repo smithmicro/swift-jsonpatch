@@ -16,7 +16,7 @@ Pod::Spec.new do |s|
   #
 
   s.name         = "RMJSONPatch"
-  s.version      = "1.0.4"
+  s.version      = "1.0.4.1"
   s.summary      = "JSONPatch is a swift library for applying and generating RFC-6902 compliant JSON patches."
   s.module_name  = "JSONPatch"
 
@@ -82,7 +82,7 @@ Pod::Spec.new do |s|
   #  Supports git, hg, bzr, svn and HTTP.
   #
 
-  s.source       = { :git => "https://github.com/raymccrae/swift-jsonpatch.git", :tag => "v#{s.version}" }
+  s.source       = { :git => "https://github.com/rjga94/swift-jsonpatch.git", :tag => "v#{s.version}" }
 
 
   # ――― Source Code ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――― #
