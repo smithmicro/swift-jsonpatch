@@ -21,15 +21,16 @@
 import Foundation
 
 struct JSONPatchGenerator {
-
     fileprivate enum Operation {
         case add(path: JSONPointer, value: JSONElement)
         case remove(path: JSONPointer, value: JSONElement)
         case replace(path: JSONPointer, old: JSONElement, value: JSONElement)
         case copy(from: JSONPointer, path: JSONPointer, value: JSONElement)
         case move(from: JSONPointer, old: JSONElement, path: JSONPointer, value: JSONElement)
+        case test(path: JSONPointer, value: JSONElement)
     }
 
+    private var identifiers = ["id"]
     private var unchanged: [JSONPointer: JSONElement] = [:]
     private var operations: [Operation] = []
     private var patchOperations: [JSONPatch.Operation] {
@@ -50,14 +51,14 @@ struct JSONPatchGenerator {
         }
 
         switch (a, b) {
-        case (.object(let dictA), .object(let dictB)),
-             (.object(let dictA), .mutableObject(let dictB as NSDictionary)),
+        case let (.object(dictA), .object(dictB)), let
+            (.object(dictA), .mutableObject(dictB as NSDictionary)),
              (.mutableObject(let dictA as NSDictionary), .object(let dictB)),
              (.mutableObject(let dictA as NSDictionary), .mutableObject(let dictB as NSDictionary)):
             try computeObjectUnchanged(pointer: pointer, a: dictA, b: dictB)
 
-        case (.array(let arrayA), .array(let arrayB)),
-             (.array(let arrayA), .mutableArray(let arrayB as NSArray)),
+        case let (.array(arrayA), .array(arrayB)), let
+            (.array(arrayA), .mutableArray(arrayB as NSArray)),
              (.mutableArray(let arrayA as NSArray), .array(let arrayB)),
              (.mutableArray(let arrayA as NSArray), .mutableArray(let arrayB as NSArray)):
             try computeArrayUnchanged(pointer: pointer, a: arrayA, b: arrayB)
@@ -88,7 +89,7 @@ struct JSONPatchGenerator {
                                                 a: NSArray,
                                                 b: NSArray) throws {
         let count = min(a.count, b.count)
-        for index in 0..<count {
+        for index in 0 ..< count {
             try computeUnchanged(pointer: pointer.appended(withIndex: index),
                                  a: try JSONElement(any: a[index]),
                                  b: try JSONElement(any: b[index]))
@@ -113,17 +114,17 @@ struct JSONPatchGenerator {
         }
 
         switch (source, target) {
-        case (.object(let dictA), .object(let dictB)),
-             (.object(let dictA), .mutableObject(let dictB as NSDictionary)),
+        case let (.object(dictA), .object(dictB)), let
+            (.object(dictA), .mutableObject(dictB as NSDictionary)),
              (.mutableObject(let dictA as NSDictionary), .object(let dictB)),
              (.mutableObject(let dictA as NSDictionary), .mutableObject(let dictB as NSDictionary)):
             try generateObjectDiffs(pointer: pointer, source: dictA, target: dictB)
 
-        case (.array(let arrayA), .array(let arrayB)),
-             (.array(let arrayA), .mutableArray(let arrayB as NSArray)),
+        case let (.array(arrayA), .array(arrayB)), let
+            (.array(arrayA), .mutableArray(arrayB as NSArray)),
              (.mutableArray(let arrayA as NSArray), .array(let arrayB)),
              (.mutableArray(let arrayA as NSArray), .mutableArray(let arrayB as NSArray)):
-            try generateArrayDiffs(pointer: pointer, source: arrayA, target: arrayB)
+            try generateArrayDiffs(path: pointer, source: arrayA, target: arrayB)
 
         default:
             break
@@ -136,7 +137,7 @@ struct JSONPatchGenerator {
         guard
             let sourceKeys = source.allKeys as? [String],
             let targetKeys = target.allKeys as? [String] else {
-                return
+            return
         }
         let sourceKeySet = Set(sourceKeys)
         let targetKeySet = Set(targetKeys)
@@ -163,31 +164,101 @@ struct JSONPatchGenerator {
         }
     }
 
-    private mutating func generateArrayDiffs(pointer: JSONPointer,
-                                             source: NSArray,
-                                             target: NSArray) throws {
-        if source.count > target.count {
-            // target is smaller than source, remove end elements.
-            for index in (target.count..<source.count).reversed() {
-                remove(path: pointer.appended(withIndex: index),
-                       value: try JSONElement(any: source[index]))
+    private mutating func generateArrayDiffs(path: JSONPointer,
+                                             source s: NSArray,
+                                             target t: NSArray) throws {
+        let source = s.toJSONElementArray()
+        let target = t.toJSONElementArray()
+        let lcs = source.longestCommonSubsequence(target)
+
+        var srcIdx = 0
+        var targetIdx = 0
+        var lcsIdx = 0
+        let srcSize = source.count
+        let targetSize = target.count
+        let lcsSize = lcs.count
+
+        var pos = 0
+        while lcsIdx < lcsSize {
+            let lcsNode = lcs[lcsIdx]
+            let srcNode = source[srcIdx]
+            let targetNode = target[targetIdx]
+
+            if lcsNode == srcNode && lcsNode == targetNode {
+                srcIdx += 1
+                targetIdx += 1
+                lcsIdx += 1
+                pos += 1
+            } else {
+                if lcsNode == srcNode {
+                    let currPath = path.appended(withIndex: pos)
+                    operations.append(.add(path: currPath, value: targetNode))
+                    pos += 1
+                    targetIdx += 1
+                } else if lcsNode == targetNode {
+                    let currPath = path.appended(withIndex: pos)
+                    addArrayItemTest(path: currPath, node: srcNode)
+                    operations.append(.remove(path: currPath, value: srcNode))
+                    srcIdx += 1
+                } else {
+                    let currPath = path.appended(withIndex: pos)
+                    addArrayItemTest(path: currPath, node: srcNode)
+                    try generateDiffs(pointer: currPath, source: srcNode, target: targetNode)
+                    srcIdx += 1
+                    targetIdx += 1
+                    pos += 1
+                }
             }
         }
 
-        let count = min(source.count, target.count)
-        for index in 0..<count {
-            try generateDiffs(pointer: pointer.appended(withIndex: index),
-                              source: try JSONElement(any: source[index]),
-                              target: try JSONElement(any: target[index]))
+        while srcIdx < srcSize && targetIdx < targetSize {
+            let srcNode = source[srcIdx]
+            let targetNode = target[targetIdx]
+            let currPath = path.appended(withIndex: pos)
+            addArrayItemTest(path: currPath, node: srcNode)
+            try generateDiffs(pointer: currPath, source: srcNode, target: targetNode)
+            srcIdx += 1
+            targetIdx += 1
+            pos += 1
         }
 
-        if source.count < target.count {
-            let appendPointer = pointer.appended(withComponent: "-")
-            for index in source.count..<target.count {
-                add(path: appendPointer,
-                    value: try JSONElement(any: target[index]))
+        pos = addRemaining(path, target, &pos, &targetIdx, targetSize)
+        removeRemaining(path, pos, &srcIdx, srcSize, source)
+    }
+
+    private mutating func addArrayItemTest(path: JSONPointer, node: JSONElement) {
+        if node.isContainer {
+            if let field = getIdentifierField(node), let value = node.get(fieldName: field) {
+                operations.append(.test(path: path.appended(withComponent: field), value: value))
             }
+        } else {
+            operations.append(.test(path: path, value: node))
         }
+    }
+
+    private func getIdentifierField(_ node: JSONElement) -> String? {
+        return identifiers.first(where: { node.get(fieldName: $0) != nil })
+    }
+
+    private mutating func removeRemaining(_ path: JSONPointer, _ pos: Int, _ srcIdx: inout Int, _ srcSize: Int, _ source: [JSONElement]) {
+        while srcIdx < srcSize {
+            let value = source[srcIdx]
+            let currPath = path.appended(withIndex: pos)
+            addArrayItemTest(path: currPath, node: value)
+            operations.append(.remove(path: currPath, value: value))
+            srcIdx += 1
+        }
+    }
+
+    private mutating func addRemaining(_ path: JSONPointer, _ target: [JSONElement], _ pos: inout Int, _ targetIdx: inout Int, _ targetSize: Int) -> Int {
+        while targetIdx < targetSize {
+            let jsonNode = target[targetIdx]
+            let currPath = path.appended(withIndex: pos)
+            try? operations.append(.add(path: currPath, value: jsonNode.copy()))
+            pos += 1
+            targetIdx += 1
+        }
+        return pos
     }
 
     private mutating func replace(path: JSONPointer, old: JSONElement, value: JSONElement) {
@@ -199,14 +270,6 @@ struct JSONPatchGenerator {
     }
 
     private mutating func add(path: JSONPointer, value: JSONElement) {
-        if let removalIndex = findPreviouslyRemoved(value: value) {
-            guard case let .remove(removedPath, _) = operations[removalIndex] else {
-                return
-            }
-            operations.remove(at: removalIndex)
-            operations.append(.move(from: removedPath, old: value, path: path, value: value))
-            return
-        }
         if let oldPath = findUnchangedValue(value: value) {
             operations.append(.copy(from: oldPath, path: path, value: value))
         } else {
@@ -244,12 +307,13 @@ extension JSONPatch.Operation {
             self = .replace(path: path, value: value)
         case let .move(from, _, path, _):
             self = .move(from: from, path: path)
+        case let .test(path: path, value: value):
+            self = .test(path: path, value: value)
         }
     }
 }
 
 extension JSONPatch {
-
     /// Initializes a JSONPatch instance with all json-patch operations required to transform the source
     /// json document into the target json document.
     ///

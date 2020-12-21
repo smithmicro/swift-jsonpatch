@@ -1,5 +1,5 @@
 //
-//  NSArray+DeepCopy.swift
+//  NSArrayExtensions.swift
 //  JSONPatch
 //
 //  Created by Raymond Mccrae on 13/11/2018.
@@ -43,4 +43,13 @@ extension NSArray {
         return result
     }
 
+    func toJSONElementArray() -> [JSONElement] {
+        var result = [JSONElement]()
+        self.forEach { element in
+            if let jsonElement = try? JSONElement(any: element) {
+                result.append(jsonElement)
+            }
+        }
+        return result
+    }
 }
